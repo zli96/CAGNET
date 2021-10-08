@@ -111,6 +111,91 @@ void printCusparseSpMat(int32_t rows, int32_t cols, int32_t nnz, int32_t *row_in
   delete [] col_indices_host;
 }
 
+template<typename T> 
+void csrmm2(
+  cusparseHandle_t handle,
+  cusparseOperation_t opa, cusparseOperation_t opb, 
+  int32_t m, int32_t n, int32_t k, int32_t nnz, 
+  T alpha, T *csrvala, int *csrrowptra, int *csrcolinda, 
+  T *b, int32_t ldb, T beta, T *c, int32_t ldc)
+{
+  static_assert(std::is_same<float, T>::value); 
+  constexpr auto cusparse_value_type = CUDA_R_32F; 
+
+  if (csrvala == nullptr || b == nullptr || c == nullptr) return; 
+
+  int32_t ma = m, ka = k; 
+
+  cusparseSpMatDescr_t descA; 
+  cusparseCreateCsr(
+    &descA,                     /* output */
+    ma, ka, nnz,                /* rows, cols, number of non zero elements */
+    csrrowptra,                 /* row offsets of the sparse matrix, size = rows +1 */
+    csrcolinda,                 /* column indices of the sparse matrix, size = nnz */
+    csrvala,                    /* values of the sparse matrix, size = nnz */
+    CUSPARSE_INDEX_32I,         /* data type of row offsets index */
+    CUSPARSE_INDEX_32I,         /* data type of col indices */
+    CUSPARSE_INDEX_BASE_ZERO,   /* base index of row offset and col indes */
+    cusparse_value_type         /* data type of values */
+  ); 
+
+  int32_t kb = k, nb = n;
+
+  cusparseDnMatDescr_t descB; 
+  cusparseCreateDnMat(
+    &descB,               /* output */
+    kb, nb, ldb,          /* rows, cols, leading dimension */
+    b,                    /* values */
+    cusparse_value_type,  /* data type of values */
+    CUSPARSE_ORDER_COL    /* memory layout, ONLY column-major is supported now */
+  ); 
+
+  cusparseDnMatDescr_t descC; 
+  cusparseCreateDnMat(
+    &descC,               /* output */
+    m, n, ldc,            /* rows, cols, leading dimension */
+    c,                    /* values */ 
+    cusparse_value_type,  /* data type of values */ 
+    CUSPARSE_ORDER_COL    /* memory layout, ONLY column-major is supported now */
+  ); 
+
+  // cusparseSpMM_bufferSize returns the bufferSize that can be used by cusparseSpMM
+  size_t bufferSize; 
+  cusparseSpMM_bufferSize(
+    handle, opa, opb,     
+    &alpha,               
+    descA, descB, 
+    &beta, 
+    descC, 
+    cusparse_value_type,  /* data type in which the computation is executed */
+    CUSPARSE_CSRMM_ALG1,  /* default computing algorithm for CSR sparse matrix format */
+    &bufferSize           /* output */
+  ); 
+
+  void* externalBuffer; // device pointer
+  cudaMalloc(&externalBuffer, bufferSize); 
+
+  cusparseSpMM(
+    handle, opa, opb, 
+    &alpha, 
+    descA, descB, 
+    &beta, 
+    descC, 
+    cusparse_value_type,  /* data type in which the computation is executed */
+    CUSPARSE_CSRMM_ALG1,  /* default computing algorithm for CSR sparse matrix format */
+    externalBuffer        /* external buffer */
+  ); 
+
+  cudaFree(externalBuffer); 
+  cusparseDestroySpMat(descA); 
+  cusparseDestroyDnMat(descB); 
+  cusparseDestroyDnMat(descC); 
+
+  cudaDeviceSynchronize();
+  cusparseDestroy(handle); 
+}
+
+
 // at::Tensor spmm_gpu(const at::Tensor& A_rowindices, 
 void spmm_gpu(const at::Tensor& A_rowindices, 
                         const at::Tensor& A_colindices,
@@ -124,7 +209,7 @@ void spmm_gpu(const at::Tensor& A_rowindices,
     // CHECK_CUSPARSE(cusparseCreate(&handle));
     auto state = at::globalContext().lazyInitCUDA();
     // auto handle = THCState_getCurrentSparseHandle(state);
-    auto handle = at::cuda::getCurrentCUDASparseHandle();
+    cusparseHandle_t handle = at::cuda::getCurrentCUDASparseHandle();
 
     // Impl1 -- coo2csr + csrmm2
     int nnz = A_values.size(0);
@@ -148,10 +233,6 @@ void spmm_gpu(const at::Tensor& A_rowindices,
 
     float alpha = 1;
     float beta = 1;
-    cusparseMatDescr_t descrA;
-    cusparseCreateMatDescr(&descrA);
-    cusparseSetMatType(descrA,CUSPARSE_MATRIX_TYPE_GENERAL);
-    cusparseSetMatIndexBase(descrA,CUSPARSE_INDEX_BASE_ZERO);
 
     // auto C = torch::ones({n, B.size(1)}, torch::dtype(torch::kDouble).device(torch::kCUDA));
 
@@ -168,23 +249,22 @@ void spmm_gpu(const at::Tensor& A_rowindices,
     C.set_data(C.contiguous());
     C.set_data(C.view({c_row, c_col}));
 
-    CHECK_CUSPARSE(cusparseScsrmm2(handle,
-                                    CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                    CUSPARSE_OPERATION_TRANSPOSE,
-                                    n,
-                                    b_col,
-                                    m,
-                                    nnz,
-                                    &alpha,
-                                    descrA,
-                                    A_values.data<float>(),
-                                    d_a_csrrows,
-                                    A_colindices.data<int>(),
-                                    B.data<float>(),
-                                    B.size(1),
-                                    &beta,
-                                    C.data<float>(),
-                                    n)); 
+    csrmm2(handle,
+           CUSPARSE_OPERATION_NON_TRANSPOSE,
+           CUSPARSE_OPERATION_TRANSPOSE,
+           n,
+           b_col,
+           m,
+           nnz,
+           alpha,
+           A_values.data<float>(),
+           d_a_csrrows,
+           A_colindices.data<int>(),
+           B.data<float>(),
+           B.size(1),
+           beta,
+           C.data<float>(),
+           n); 
 
     cudaFree(d_a_csrrows);
 
@@ -194,6 +274,9 @@ void spmm_gpu(const at::Tensor& A_rowindices,
     C.set_data(C.view({c_col, c_row}));
     C.t_();
 }
+
+
+ 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("sparse_coo_tensor_gpu", &sparse_coo_tensor_gpu, "Sparse Tensor GPU-only constructor");
