@@ -738,7 +738,7 @@ def main():
 
     if graphname == "Cora":
         path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', graphname)
-        dataset = Planetoid(path, graphname, T.NormalizeFeatures())
+        dataset = Planetoid(path, graphname,transform=T.NormalizeFeatures())
         data = dataset[0]
         data = data.to(device)
         data.x.requires_grad = True
