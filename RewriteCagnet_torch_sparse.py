@@ -1,5 +1,4 @@
 import torch
-from torch.nn import Linear
 import torch.nn.functional as F
 from torch_geometric.datasets import Planetoid
 import torch_geometric.transforms as T
@@ -108,7 +107,7 @@ num_features = dataset.num_features
 mid_layer = 16
 epochs=100
 num_classes=dataset.num_classes
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+num_nodes = data.x.size()[0]
 
 torch.manual_seed(0)
 weight1_nonleaf = torch.rand(num_features, mid_layer, requires_grad=True)
@@ -125,7 +124,7 @@ weight2 = Parameter(weight2_nonleaf)
 optimizer = torch.optim.Adam([weight1, weight2], lr=0.01)
 temp_value = np.ones((data.edge_index.shape[1],),dtype='float32')
 # idx_array=data.edge_index.data.numpy()
-num_nodes = data.x.size()[0]
+
 # adj_matrix = torch.sparse_coo_tensor((idx_array[0,:],idx_array[1,:]), temp_value, ( num_nodes, num_nodes))
 inputs.x  = inputs.x.to(device)
 # adj_matrix = adj_matrix.to(device)

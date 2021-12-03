@@ -1,6 +1,7 @@
+# srun -p gpu --pty -N 1 -n X --mem=32GB --gres=gpu:X --time=h:mm:ss /bin/bash
 # source /deac/csc/ballardGrp/software/CAGNET/bin/activate
 # module load compilers/gcc/6.5.0
-# srun -p gpu --pty -N 1 -n X --mem=32GB --gres=gpu:X --time=h:mm:ss /bin/bash
+# python -m torch.distributed.launch --nproc_per_node=X --nnodes=1 dist_multiproc.py
 import torch
 from torch_geometric.datasets import Planetoid
 import torch_geometric.transforms as T
